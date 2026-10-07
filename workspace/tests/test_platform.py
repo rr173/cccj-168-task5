@@ -242,8 +242,9 @@ class PlatformTest(PlatformBase):
         t1.start(); t2.start(); t1.join(); t2.join()
         # 恰好一个成功，另一个收到版本冲突——不存在基于陈旧视图的合并
         self.assertEqual(sorted(results.values()), ["ok", "snapshot_version_conflict"])
-        # 失败者用新版本重试后成功
-        self.vote(sid, "CM-ELN", "escalate", 1, ch=ch)
+        # 失败者（竞态不定，任一委员都可能落后）用新版本重试后成功
+        loser = next(m for m, r in results.items() if r == "snapshot_version_conflict")
+        self.vote(sid, loser, "escalate", 1, ch=ch)
         d = self.svc.issue_decision("test", sid)
         self.assertEqual(d["action"], "escalate")
         self.assertTrue(self.svc.verify_proof(d["decision_id"])["verified"])
@@ -488,6 +489,29 @@ class PlatformTest(PlatformBase):
         self.assertFalse(v2["verified"])
         self.assertTrue(any(not c["passed"] and c["check"] == "proof_hash_unchanged"
                             for c in v2["checks"]))
+
+    def test_reverify_same_proof_object_is_idempotent(self):
+        """同一决定对象连续复核：每次都应成功，且对象不被复核过程改写；
+        篡改动作字段仍必须被识别。"""
+        cid = self.cid()
+        self.enroll_freeze_dose(cid)
+        self.close_windows()
+        sid = self.svc.create_snapshot("test", cid)["snapshot_id"]
+        d = self.two_votes_and_decide(sid)
+        did = d["decision_id"]
+        proof = self.svc.get_decision(did)["proof_bundle"]
+        before = json.dumps(proof, sort_keys=True)
+        for _ in range(3):
+            v = self.svc.verify_proof(did, tampered_proof=proof)
+            self.assertTrue(v["verified"], msg=json.dumps(v["checks"], ensure_ascii=False))
+        # 复核不得改写送入的对象（proof_hash 等字段保持原样）
+        self.assertEqual(json.dumps(proof, sort_keys=True), before)
+        # 同一对象被篡改动作字段后：必须拒绝
+        proof["action"] = "stop"
+        v = self.svc.verify_proof(did, tampered_proof=proof)
+        self.assertFalse(v["verified"])
+        self.assertTrue(any(not c["passed"] and c["check"] == "proof_hash_unchanged"
+                            for c in v["checks"]))
 
     def test_forged_signature_rejected(self):
         cid = self.cid()

@@ -1157,7 +1157,9 @@ class Services:
         def check(name, ok, detail=""):
             checks.append({"check": name, "passed": bool(ok), "detail": detail})
 
-        embedded_hash = proof.pop("proof_hash", None) if tampered_proof else proof.get("proof_hash")
+        # 只读取、绝不改写送入的证明对象：复核必须是幂等的，
+        # 同一对象无论复核多少次结果都一致（下一行重算时已排除 proof_hash）
+        embedded_hash = proof.get("proof_hash")
         recomputed = canonical_hash({k: v for k, v in proof.items() if k != "proof_hash"})
         check("proof_hash_unchanged", recomputed == row["proof_hash"] == embedded_hash,
               f"recomputed={recomputed[:12]}")
