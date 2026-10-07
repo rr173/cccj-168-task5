@@ -242,8 +242,9 @@ class PlatformTest(PlatformBase):
         t1.start(); t2.start(); t1.join(); t2.join()
         # 恰好一个成功，另一个收到版本冲突——不存在基于陈旧视图的合并
         self.assertEqual(sorted(results.values()), ["ok", "snapshot_version_conflict"])
-        # 失败者用新版本重试后成功
-        self.vote(sid, "CM-ELN", "escalate", 1, ch=ch)
+        # 失败者（两个线程都可能先抢到，按实际结果取）用新版本重试后成功
+        loser = next(m for m, r in results.items() if r == "snapshot_version_conflict")
+        self.vote(sid, loser, "escalate", 1, ch=ch)
         d = self.svc.issue_decision("test", sid)
         self.assertEqual(d["action"], "escalate")
         self.assertTrue(self.svc.verify_proof(d["decision_id"])["verified"])
@@ -488,6 +489,30 @@ class PlatformTest(PlatformBase):
         self.assertFalse(v2["verified"])
         self.assertTrue(any(not c["passed"] and c["check"] == "proof_hash_unchanged"
                             for c in v2["checks"]))
+
+    # 服务层对同一决定证明对象的连续复核：复核必须是只读的——首次成功后
+    # 第二次复核同一对象仍须成功（不得摘走 proof_hash 把对象判成无效）。
+    def test_proof_reverify_same_object_twice_stays_valid(self):
+        cid = self.cid()
+        self.enroll_freeze_dose(cid)
+        self.close_windows()
+        sid = self.svc.create_snapshot("test", cid)["snapshot_id"]
+        d = self.two_votes_and_decide(sid)
+        did = d["decision_id"]
+        proof_obj = browser_roundtrip(d["proof_bundle"])
+        v1 = self.svc.verify_proof(did, tampered_proof=proof_obj)
+        v2 = self.svc.verify_proof(did, tampered_proof=proof_obj)
+        self.assertTrue(v1["verified"], msg=json.dumps(v1["checks"], ensure_ascii=False))
+        self.assertTrue(v2["verified"], msg=json.dumps(v2["checks"], ensure_ascii=False))
+        # 复核不得改写送检对象
+        self.assertIn("proof_hash", proof_obj)
+        # 篡改动作字段仍须被识别（在另一份副本上）
+        tampered = browser_roundtrip(d["proof_bundle"])
+        tampered["action"] = "stop"
+        v3 = self.svc.verify_proof(did, tampered_proof=tampered)
+        self.assertFalse(v3["verified"])
+        self.assertTrue(any(not c["passed"] and c["check"] == "proof_hash_unchanged"
+                            for c in v3["checks"]))
 
     def test_forged_signature_rejected(self):
         cid = self.cid()

@@ -1157,7 +1157,9 @@ class Services:
         def check(name, ok, detail=""):
             checks.append({"check": name, "passed": bool(ok), "detail": detail})
 
-        embedded_hash = proof.pop("proof_hash", None) if tampered_proof else proof.get("proof_hash")
+        # 只读取出嵌入哈希：不得 pop 调用方对象，否则同一证明对象的第二次
+        # 复核会因 proof_hash 已被摘走而误判为无效（重算本就不含该键）。
+        embedded_hash = proof.get("proof_hash")
         recomputed = canonical_hash({k: v for k, v in proof.items() if k != "proof_hash"})
         check("proof_hash_unchanged", recomputed == row["proof_hash"] == embedded_hash,
               f"recomputed={recomputed[:12]}")
